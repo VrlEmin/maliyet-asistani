@@ -1,0 +1,80 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: maliyet-asistani-api
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - PYTHONPATH=/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      # :z Fedora SELinux için gerekli (Permission denied önleme)
+      - .:/app:z
+    user: root
+    # Chromium (Playwright) için shared memory
+    shm_size: '2gb'
+    # --reload yok; watchfiles Fedora'da izin hatası verebiliyor
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+    restart: unless-stopped
+
+  telegram-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: maliyet-asistani-telegram
+    env_file:
+      - .env
+    environment:
+      - PYTHONPATH=/app
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - .:/app:z
+    user: root
+    command: ["python", "-m", "services.telegram_bot"]
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: maliyet-asistani-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-maliyet}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-your_secure_password}
+      POSTGRES_DB: ${POSTGRES_DB:-maliyet_db}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-maliyet}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: maliyet-asistani-cache
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
