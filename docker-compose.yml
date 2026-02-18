@@ -22,7 +22,7 @@ services:
     # Chromium (Playwright) için shared memory
     shm_size: '2gb'
     # --reload yok; watchfiles Fedora'da izin hatası verebiliyor
-    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
     restart: unless-stopped
 
   telegram-bot:

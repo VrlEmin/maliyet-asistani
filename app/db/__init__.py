@@ -1,9 +1,3 @@
-"""
-Uyumluluk katmanı – app.db ve app.core.config re-export.
-Eski import'lar (services, main) çalışmaya devam eder.
-"""
-
-from app.core.config import settings
 from app.db.base_class import Base
 from app.db.session import (
     async_session,
@@ -16,9 +10,8 @@ from app.db.session import (
 
 __all__ = [
     "Base",
-    "settings",
-    "engine",
     "async_session",
+    "engine",
     "get_db",
     "get_redis",
     "init_redis",
