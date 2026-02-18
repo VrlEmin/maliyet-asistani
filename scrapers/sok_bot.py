@@ -7,7 +7,7 @@ kullanarak JSON benzeri yapıları parse eder. iPhone User-Agent kullanarak bot 
 Özellikler:
 - RSC format parse (initialSearchResult -> results)
 - JSON benzeri yapıları HTML'den çıkarma
-- Kuruş dönüşümü: MigrosScraper benzeri mantık
+- Kuruş dönüşümü: Base scraper _safe_price
 """
 
 from __future__ import annotations
@@ -19,32 +19,13 @@ import re
 import unicodedata
 from typing import Any
 
-from scrapers.base_scraper import AbstractBaseScraper
+from src.services.base_scraper import AbstractBaseScraper
 
 logger = logging.getLogger(__name__)
 
 # API endpoint
 SOK_BASE_URL = "https://www.sokmarket.com.tr"
 SOK_SEARCH_URL = f"{SOK_BASE_URL}/arama"
-
-# iPhone User-Agent (bot algılamayı önlemek için)
-SOK_IPHONE_USER_AGENT = (
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6_2 like Mac OS X) "
-    "AppleWebKit/605.1.15 (KHTML, like Gecko) "
-    "Version/18.6 Mobile/15E148 Safari/604.1"
-)
-
-# API header'ları
-SOK_API_HEADERS = {
-    "User-Agent": SOK_IPHONE_USER_AGENT,
-    "Referer": SOK_BASE_URL,
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
-}
-
-# Fiyat dönüşümü için threshold (MigrosScraper benzeri)
-SOK_PRICE_DIVISOR = 100.0
-_SOK_KURUS_THRESHOLD = 1000.0
 
 # Veri filtreleme: Alakasız ürünleri elemek için kara liste
 # Encoding sorunları nedeniyle hem normal hem de encoding sorunlu versiyonlar kontrol edilir
@@ -68,17 +49,6 @@ EXCLUDED_KEYWORDS = [
 
 # Kategori bazlı filtreleme: Bu kategorilerdeki ürünler filtrelenir
 EXCLUDED_CATEGORIES = ['evcil-dostlar', 'hazir-yemek-ve-meze']
-
-
-def _safe_price(raw: float | int) -> float:
-    """
-    ŞOK fiyatını TL'ye çevirir.
-    Fiyat > 1000 ise kuruş kabul edilip 100'e bölünür; aksi hâlde TL'dir.
-    """
-    raw_float = float(raw)
-    if raw_float > _SOK_KURUS_THRESHOLD:
-        return round(raw_float / SOK_PRICE_DIVISOR, 2)
-    return round(raw_float, 2)
 
 
 class SokScraper(AbstractBaseScraper):
@@ -122,9 +92,15 @@ class SokScraper(AbstractBaseScraper):
             # RSC token olmadan önce dene
             search_url = f"{SOK_SEARCH_URL}?q={query}"
             
-            # Header'ları merge et (DEFAULT_HEADERS ile birleştir)
+            # Header'ları merge et (iPhone User-Agent kullan)
             merged_headers = dict(self.DEFAULT_HEADERS)
-            merged_headers.update(SOK_API_HEADERS)
+            merged_headers.update(
+                self.get_headers_for_device(
+                    "iphone",
+                    referer=SOK_BASE_URL,
+                    accept="text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                )
+            )
             
             # Accept-Encoding header'ını kaldır (httpx otomatik handle eder)
             merged_headers.pop("Accept-Encoding", None)
@@ -191,7 +167,7 @@ class SokScraper(AbstractBaseScraper):
 
                     # Encoding düzeltmesi: ŞOK'tan gelen ürün adlarında encoding sorunları var
                     # Örn: "SÃ¼t" -> "Süt", "MÄ±sÄ±r" -> "Mısır"
-                    product_name = self._fix_encoding(product_name)
+                    product_name = self._clean_text(product_name)
 
                     # Veri filtreleme: Kara liste kontrolü
                     # Encoding sorunlarını handle etmek için normalize edilmiş versiyonu kontrol et
@@ -269,7 +245,7 @@ class SokScraper(AbstractBaseScraper):
                         continue
                     
                     # Kuruş dönüşümü (gerekirse)
-                    price = _safe_price(price)
+                    price = self._safe_price(price)
 
                     # Görsel: product -> images[0] -> host + path
                     images = product_data.get("images", [])
@@ -473,144 +449,6 @@ class SokScraper(AbstractBaseScraper):
 
         if end_idx > start_idx:
             return text[start_idx:end_idx]
-        return None
-
-    @staticmethod
-    def _fix_encoding(text: str) -> str:
-        """
-        ŞOK'tan gelen encoding sorunlu metinleri düzeltir.
-        ŞOK'un API'sinden gelen veriler UTF-8 olarak yanlış decode edilmiş olabilir.
-        Örn: "SÃ¼t" -> "Süt", "MÄ±sÄ±r" -> "Mısır", "YaÄ\x9flÄ±" -> "Yağlı"
-        """
-        if not text:
-            return text
-        
-        try:
-            fixed_text = text
-            
-            # Adım 1: Önce özel karakter kombinasyonlarını düzelt (uzun kombinasyonlar önce)
-            special_combinations = {
-                'YaÄ\x9fs': 'Yağs',      # YaÄ\x9fsÄ±z -> Yağsız
-                'YaÄ\x9fl': 'Yağl',      # YaÄ\x9flÄ± -> Yağlı
-                'Ä\x9fs': 'ğs',         # Genel
-                'Ä\x9fl': 'ğl',         # Genel
-                '\x9fsÄ': 'ğsı',        # Genel
-                '\x9flÄ': 'ğlı',        # Genel
-                'ıÇ': 'Ç',              # ıÇilekli -> Çilekli
-                'ıç': 'ç',              # ıçilekli -> çilekli
-                'ıĞ': 'Ğ',              # Genel
-                'ığ': 'ğ',              # Genel
-                'ıŞ': 'Ş',              # Genel
-                'ış': 'ş',              # Genel
-                'ıÜ': 'Ü',              # Genel
-                'ıü': 'ü',              # Genel
-                'ıÖ': 'Ö',              # Genel
-                'ıö': 'ö',              # Pastıörize -> Pastörize
-                'ıİ': 'İ',              # Genel
-                'ı¶': 'ö',              # Pastı¶rize -> Pastörize
-                'Åğ': 'ş',              # SütaÅğ -> Sütaş
-                'şğ': 'ş',              # Sütaşğ -> Sütaş
-                'ıÇi': 'Çi',            # ıÇilekli -> Çilekli (ekstra)
-                'ıçi': 'çi',            # ıçilekli -> çilekli (ekstra)
-            }
-            
-            for wrong, correct in sorted(special_combinations.items(), key=lambda x: -len(x[0])):
-                fixed_text = fixed_text.replace(wrong, correct)
-            
-            # Adım 2: Tek karakter encoding sorunlarını düzelt
-            single_char_fixes = {
-                'Ã¼': 'ü',      # SÃ¼t -> Süt
-                'Ã§': 'ç',      # Ã§ilek -> çilek
-                'Ä±': 'ı',      # MÄ±sÄ±r -> Mısır
-                'Ä°': 'İ',      # Ä°Ã§im -> İçim
-                '¼': 'ü',       # SÃ¼t -> Süt (alternatif)
-                '±': 'ı',       # MÄ±sÄ±r -> Mısır (alternatif)
-                '\x9f': 'ğ',    # YaÄ\x9f -> Yağ
-                'Å': 'ş',       # SütaÅ -> Sütaş
-                '¶': 'ö',       # Pastörize -> Pastörize
-            }
-            
-            for wrong, correct in single_char_fixes.items():
-                fixed_text = fixed_text.replace(wrong, correct)
-            
-            # Adım 3: Kalan genel fallback'ler
-            general_fixes = {
-                'Ã': 'ı',       # Genel fallback
-                'Ä': 'ı',       # Genel fallback
-            }
-            
-            for wrong, correct in general_fixes.items():
-                fixed_text = fixed_text.replace(wrong, correct)
-            
-            # Adım 4: "ı" karakterinden sonra gelen Türkçe karakterleri düzelt (regex ile)
-            # Örn: "ıÇ" -> "Ç", "ıö" -> "ö", "ış" -> "ş"
-            # Regex kullanarak daha güvenilir düzeltme
-            import re
-            # "ı" karakterinden sonra gelen Türkçe karakterleri kaldır
-            # Hem büyük hem küçük harfleri kapsar
-            turkish_chars = 'ÇĞİÖŞÜçğıöşü'
-            pattern = f'ı([{turkish_chars}])'
-            fixed_text = re.sub(pattern, r'\1', fixed_text)
-            
-            # Ayrıca manuel düzeltmeler (fallback - tekrar kontrol)
-            turkish_after_i = {
-                'ıÇ': 'Ç', 'ıç': 'ç',
-                'ıĞ': 'Ğ', 'ığ': 'ğ',
-                'ıŞ': 'Ş', 'ış': 'ş',
-                'ıÜ': 'Ü', 'ıü': 'ü',
-                'ıÖ': 'Ö', 'ıö': 'ö',
-                'ıİ': 'İ', 'ıı': 'ı',
-            }
-            
-            # Tekrar düzelt (bazı karakterler regex'ten kaçmış olabilir)
-            for wrong, correct in turkish_after_i.items():
-                fixed_text = fixed_text.replace(wrong, correct)
-            
-            # Son bir kontrol: Eğer hala "ı" karakterinden sonra Türkçe karakter varsa
-            # Regex ile tekrar düzelt
-            fixed_text = re.sub(pattern, r'\1', fixed_text)
-            
-            # Adım 5: "şğ" -> "ş" gibi çift karakter sorunlarını düzelt
-            double_char_fixes = {
-                'şğ': 'ş',
-                'Şğ': 'Ş',
-            }
-            
-            for wrong, correct in double_char_fixes.items():
-                fixed_text = fixed_text.replace(wrong, correct)
-            
-            return fixed_text
-            
-        except Exception as e:
-            logger.debug("[ŞOK] Encoding düzeltme hatası: %s", e)
-            return text
-
-    @staticmethod
-    def _parse_gramaj_from_name(product_name: str) -> float | None:
-        """Ürün adından gramaj bilgisini çıkarır."""
-        if not product_name:
-            return None
-        
-        product_name = product_name.replace(",", ".")
-        
-        # Gram
-        m = re.search(r"(\d+(?:\.\d+)?)\s*(?:gr?|gram|g)\b", product_name, re.I)
-        if m:
-            return float(m.group(1))
-        
-        # Kilogram
-        m = re.search(r"(\d+(?:\.\d+)?)\s*kg\b", product_name, re.I)
-        if m:
-            return float(m.group(1)) * 1000
-        
-        # Mililitre/Litre
-        m = re.search(r"(\d+(?:\.\d+)?)\s*(?:ml|lt|l)\b", product_name, re.I)
-        if m:
-            val = float(m.group(1))
-            if val < 20:  # litre
-                return val * 1000
-            return val  # ml
-        
         return None
 
     async def get_product_price(self, product_id: str) -> dict[str, Any] | None:

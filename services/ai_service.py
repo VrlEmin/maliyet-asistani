@@ -542,6 +542,147 @@ class AIService:
         """
         return products
 
+    # ── Akıllı Sepet Optimizasyonu ────────────────────────────────────────────
+
+    async def optimize_basket(self, basket_data: dict[str, Any]) -> dict[str, Any]:
+        """
+        Sepet verisini Gemini'ye gönderir; en ucuza tamamlamak için hangi marketten
+        hangi ürünü alması gerektiği ve market market gezmenin tasarrufunu analiz ettirir.
+
+        Args:
+            basket_data: { "queries": [...], "per_product": { "süt": [processed_list], ... } }
+
+        Returns:
+            {
+                "recommendations": [ {"product": str, "market": str, "product_name": str, "price": float}, ... ],
+                "total_basket_tl": float,
+                "summary": str,
+            }
+        """
+        queries = basket_data.get("queries", [])
+        per_product = basket_data.get("per_product", {})
+        if not per_product:
+            return {
+                "recommendations": [],
+                "total_basket_tl": 0.0,
+                "summary": "Sepette ürün bulunamadı.",
+            }
+
+        # Fallback: her ürün için en ucuz kaydı seç; toplam hesapla
+        recommendations, total_basket_tl = self._fallback_basket_recommendations(per_product)
+        summary_fallback = (
+            f"Sepet en ucuza göre oluşturuldu. Toplam: {total_basket_tl:.2f} TL."
+        )
+
+        if not await self._ensure_model_validated():
+            return {
+                "recommendations": recommendations,
+                "total_basket_tl": total_basket_tl,
+                "summary": summary_fallback,
+            }
+
+        # Token tasarrufu: ürün başına en fazla 8 seçenek
+        prompt = self._build_basket_optimization_prompt(per_product, max_options_per_product=8)
+        if not prompt:
+            return {
+                "recommendations": recommendations,
+                "total_basket_tl": total_basket_tl,
+                "summary": summary_fallback,
+            }
+
+        config = types.GenerateContentConfig(
+            temperature=0.3,
+            max_output_tokens=1024,
+            top_p=0.9,
+        )
+
+        models_to_try = [self.available_model] if self.available_model else MODEL_FALLBACK_CHAIN
+        for model_name in models_to_try:
+            if not model_name:
+                continue
+            try:
+                result = await self._generate_with_retry(
+                    model=model_name,
+                    prompt=prompt,
+                    config=config,
+                )
+                if result:
+                    return {
+                        "recommendations": recommendations,
+                        "total_basket_tl": total_basket_tl,
+                        "summary": result.strip(),
+                    }
+            except Exception as exc:
+                exc_str = str(exc).lower()
+                is_429 = "429" in str(exc) or "rate" in exc_str or "retry" in exc_str or "resource exhausted" in exc_str
+                if is_429:
+                    logger.warning("[AIService] optimize_basket 429, fallback kullanılıyor: %s", exc)
+                else:
+                    logger.warning("[AIService] optimize_basket (Gemini) hatası: %s", exc)
+                break
+
+        return {
+            "recommendations": recommendations,
+            "total_basket_tl": total_basket_tl,
+            "summary": summary_fallback,
+        }
+
+    @staticmethod
+    def _fallback_basket_recommendations(
+        per_product: dict[str, list[dict[str, Any]]],
+    ) -> tuple[list[dict[str, Any]], float]:
+        """Her ürün için en ucuz kaydı seçer; (recommendations, total_tl) döner."""
+        recommendations: list[dict[str, Any]] = []
+        total = 0.0
+        for product_query, products in per_product.items():
+            if not products:
+                continue
+            # Zaten fiyata göre sıralı (filter_and_rank çıktısı); ilk = en ucuz
+            p = products[0]
+            price = float(p.get("price", 0))
+            total += price
+            recommendations.append({
+                "product": product_query,
+                "market": p.get("market_name", ""),
+                "product_name": p.get("product_name", ""),
+                "price": price,
+            })
+        return recommendations, total
+
+    @staticmethod
+    def _build_basket_optimization_prompt(
+        per_product: dict[str, list[dict[str, Any]]],
+        max_options_per_product: int = 8,
+    ) -> str:
+        """Sepet optimizasyonu için Gemini prompt'u (ürün | market | ürün adı | fiyat)."""
+        lines = []
+        for product_query, products in per_product.items():
+            if not products:
+                continue
+            lines.append(f"\n## Aranan ürün: \"{product_query}\"")
+            lines.append("| Market | Ürün Adı | Fiyat (TL) |")
+            lines.append("|--------|----------|------------|")
+            for p in products[:max_options_per_product]:
+                market = p.get("market_name", "")
+                name = (p.get("product_name", "") or "")[:60]
+                price = p.get("price", 0)
+                lines.append(f"| {market} | {name} | {price:.2f} |")
+        if not lines:
+            return ""
+        table = "\n".join(lines)
+        return f"""Sen bir market sepet danışmanısın. Kullanıcının sepetindeki ürünleri en ucuza tamamlamak için hangi marketten hangi ürünü alması gerektiğini analiz et.
+
+Aşağıda her ürün için farklı marketlerdeki fiyatlar var:
+
+{table}
+
+Görevin:
+1. Kullanıcının sepetindeki ürünleri en ucuza tamamlamak için her ürün için hangi marketten hangi ürünü almalı? (ürün adı + market + fiyat)
+2. Toplam sepet tutarını hesapla (seçilen ürünlerin fiyatları toplamı).
+3. Eğer tek bir markette tüm ürünler varsa ama daha pahalıysa, kullanıcıya "market market gezerek" toplamda kaç TL tasarruf edeceğini hesapla ve kısa bir özet yaz.
+
+Yanıtını Türkçe, net ve kısa ver. Toplam sepet tutarını TL olarak belirt. Tasarruf varsa "X TL tasarruf" şeklinde yaz."""
+
     # ── Prompt Şablonları ────────────────────────────────────────────────────
 
     @staticmethod

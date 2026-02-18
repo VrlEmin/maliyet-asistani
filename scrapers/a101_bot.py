@@ -6,53 +6,23 @@ JSON response parse eder. iPhone User-Agent kullanarak bot algılamayı önler.
 
 Özellikler:
 - JSON API response parse
-- Kuruş dönüşümü: MigrosScraper benzeri mantık
+- Kuruş dönüşümü: Base scraper _safe_price
 - URL encoding: Filter parametreleri safe encode edilir
 """
 
 from __future__ import annotations
 
 import logging
-import re
 from typing import Any
 from urllib.parse import urlencode
 
-from scrapers.base_scraper import AbstractBaseScraper
+from src.services.base_scraper import AbstractBaseScraper
 
 logger = logging.getLogger(__name__)
 
 # API endpoint
 A101_API_BASE = "https://a101.wawlabs.com"
 A101_SEARCH_URL = f"{A101_API_BASE}/search"
-
-# iPhone User-Agent (bot algılamayı önlemek için)
-A101_IPHONE_USER_AGENT = (
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6_2 like Mac OS X) "
-    "AppleWebKit/605.1.15 (KHTML, like Gecko) "
-    "Version/18.6 Mobile/15E148 Safari/604.1"
-)
-
-# API header'ları
-A101_API_HEADERS = {
-    "User-Agent": A101_IPHONE_USER_AGENT,
-    "Referer": "https://www.a101.com.tr/",
-    "Accept": "application/json",
-}
-
-# Fiyat dönüşümü için threshold (MigrosScraper benzeri)
-A101_PRICE_DIVISOR = 100.0
-_A101_KURUS_THRESHOLD = 1000.0
-
-
-def _safe_price(raw: float | int) -> float:
-    """
-    A101 fiyatını TL'ye çevirir.
-    Fiyat > 1000 ise kuruş kabul edilip 100'e bölünür; aksi hâlde TL'dir.
-    """
-    raw_float = float(raw)
-    if raw_float > _A101_KURUS_THRESHOLD:
-        return round(raw_float / A101_PRICE_DIVISOR, 2)
-    return round(raw_float, 2)
 
 
 class A101Scraper(AbstractBaseScraper):
@@ -111,9 +81,15 @@ class A101Scraper(AbstractBaseScraper):
             full_url = f"{A101_SEARCH_URL}?{query_string}"
             
             # API isteği
-            # Header'ları merge et (DEFAULT_HEADERS ile birleştir)
+            # Header'ları merge et (iPhone User-Agent kullan)
             merged_headers = dict(self.DEFAULT_HEADERS)
-            merged_headers.update(A101_API_HEADERS)
+            merged_headers.update(
+                self.get_headers_for_device(
+                    "iphone",
+                    referer="https://www.a101.com.tr/",
+                    accept="application/json",
+                )
+            )
             
             # Accept-Encoding header'ını kaldır (httpx otomatik handle eder)
             merged_headers.pop("Accept-Encoding", None)
@@ -166,7 +142,7 @@ class A101Scraper(AbstractBaseScraper):
                         continue
                     
                     # Kuruş dönüşümü (gerekirse - genelde TL olarak geliyor)
-                    price = _safe_price(price)
+                    price = self._safe_price(price)
 
                     # Görsel (A101 API'de "image" veya "image_url" liste olarak gelebilir)
                     image_url_raw = item.get("image") or item.get("image_url") or item.get("imageUrl")
@@ -218,34 +194,6 @@ class A101Scraper(AbstractBaseScraper):
             logger.warning("[A101] API hatası '%s': %s", query, exc)
 
         return results
-
-    @staticmethod
-    def _parse_gramaj_from_name(product_name: str) -> float | None:
-        """Ürün adından gramaj bilgisini çıkarır."""
-        if not product_name:
-            return None
-        
-        product_name = product_name.replace(",", ".")
-        
-        # Gram
-        m = re.search(r"(\d+(?:\.\d+)?)\s*(?:gr?|gram|g)\b", product_name, re.I)
-        if m:
-            return float(m.group(1))
-        
-        # Kilogram
-        m = re.search(r"(\d+(?:\.\d+)?)\s*kg\b", product_name, re.I)
-        if m:
-            return float(m.group(1)) * 1000
-        
-        # Mililitre/Litre
-        m = re.search(r"(\d+(?:\.\d+)?)\s*(?:ml|lt|l)\b", product_name, re.I)
-        if m:
-            val = float(m.group(1))
-            if val < 20:  # litre
-                return val * 1000
-            return val  # ml
-        
-        return None
 
     async def get_product_price(self, product_id: str) -> dict[str, Any] | None:
         """Belirli bir ürünün fiyatını getirir (search ile)."""

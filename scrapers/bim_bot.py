@@ -19,7 +19,7 @@ from typing import Any
 
 from bs4 import BeautifulSoup
 
-from scrapers.base_scraper import AbstractBaseScraper
+from src.services.base_scraper import AbstractBaseScraper
 
 logger = logging.getLogger(__name__)
 

@@ -1,4 +1,4 @@
-from scrapers.base_scraper import AbstractBaseScraper
+from src.services.base_scraper import AbstractBaseScraper
 from scrapers.migros_bot import MigrosScraper
 from scrapers.bim_bot import BimScraper
 from scrapers.a101_bot import A101Scraper

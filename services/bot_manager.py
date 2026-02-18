@@ -240,6 +240,42 @@ class BotManager:
             "total_products": len(result["results"]),
         }
 
+    # ── Sepet (çoklu ürün) araması ───────────────────────────────────────────
+
+    async def search_basket(self, queries: list[str]) -> dict[str, Any]:
+        """
+        Virgülle ayrılmış ürün listesi için her ürünü paralel arar; sonuçları toplar.
+
+        Args:
+            queries: Örn. ["süt", "yumurta", "peynir"]
+
+        Returns:
+            {
+                "queries": list[str],
+                "per_product": { "süt": { "results": [...], "total_products": N }, ... }
+            }
+        """
+        if not queries:
+            return {"queries": [], "per_product": {}}
+        tasks = [self.search_all_markets(q) for q in queries]
+        raw_results = await asyncio.gather(*tasks, return_exceptions=True)
+        per_product: dict[str, dict[str, Any]] = {}
+        for q, result in zip(queries, raw_results):
+            if isinstance(result, Exception):
+                logger.warning("[BotManager] search_basket '%s' hatası: %s", q, result)
+                per_product[q] = {"results": [], "total_products": 0}
+                continue
+            per_product[q] = {
+                "results": result.get("results", []),
+                "total_products": result.get("total_products", 0),
+            }
+        logger.info(
+            "[BotManager] search_basket: %d ürün, toplam %d kayıt",
+            len(queries),
+            sum(p["total_products"] for p in per_product.values()),
+        )
+        return {"queries": list(queries), "per_product": per_product}
+
     # ── Belirli Bir Ürünün Fiyatlarını Topla ─────────────────────────────────
 
     async def get_price_from_all(self, product_id: str) -> list[dict[str, Any]]:

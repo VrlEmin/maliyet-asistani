@@ -17,7 +17,7 @@ from urllib.parse import quote
 
 from bs4 import BeautifulSoup
 
-from scrapers.base_scraper import AbstractBaseScraper
+from src.services.base_scraper import AbstractBaseScraper
 
 logger = logging.getLogger(__name__)
 
@@ -25,21 +25,6 @@ logger = logging.getLogger(__name__)
 TKKOOP_BASE_URL = "https://www.tkkoop.com.tr"
 TKKOOP_SEARCH_URL = f"{TKKOOP_BASE_URL}/arama"
 TKKOOP_KAMPANYA_URL = f"{TKKOOP_BASE_URL}/haftalik-kampanyalar"
-
-# iPhone User-Agent – Mutlaka bu User-Agent kullanılır (bot algılamayı önlemek için)
-TKKOOP_IPHONE_USER_AGENT = (
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6_2 like Mac OS X) "
-    "AppleWebKit/605.1.15 (KHTML, like Gecko) "
-    "Version/18.6 Mobile/15E148 Safari/604.1"
-)
-
-# API header'ları (minimal - Accept-Encoding kaldırıldı performans için)
-TKKOOP_HEADERS = {
-    "User-Agent": TKKOOP_IPHONE_USER_AGENT,
-    "Referer": TKKOOP_BASE_URL,
-    "Accept": "text/html,application/xhtml+xml",
-    "Accept-Language": "tr-TR,tr;q=0.9",
-}
 
 # Kategori haritalama: Anahtar kelimeler → kategori URL'leri
 CATEGORY_MAP: dict[str, str] = {
@@ -190,7 +175,13 @@ class TarimKrediScraper(AbstractBaseScraper):
 
         results: list[dict[str, Any]] = []
         merged_headers = dict(self.DEFAULT_HEADERS)
-        merged_headers.update(TKKOOP_HEADERS)
+        merged_headers.update(
+            self.get_headers_for_device(
+                "iphone",
+                referer=TKKOOP_BASE_URL,
+                accept="text/html,application/xhtml+xml",
+            )
+        )
         merged_headers.pop("Accept-Encoding", None)
         seen_keys: set[tuple[str, str]] = set()
 
@@ -384,34 +375,6 @@ class TarimKrediScraper(AbstractBaseScraper):
         except Exception as exc:
             logger.debug("[TarimKredi] Ürün kartı parse hatası: %s", exc)
             return None
-
-    @staticmethod
-    def _parse_gramaj_from_name(product_name: str) -> float | None:
-        """Ürün adından gramaj bilgisini çıkarır."""
-        if not product_name:
-            return None
-        
-        product_name = product_name.replace(",", ".")
-        
-        # Gram
-        m = re.search(r"(\d+(?:\.\d+)?)\s*(?:gr?|gram|g)\b", product_name, re.I)
-        if m:
-            return float(m.group(1))
-        
-        # Kilogram
-        m = re.search(r"(\d+(?:\.\d+)?)\s*kg\b", product_name, re.I)
-        if m:
-            return float(m.group(1)) * 1000
-        
-        # Mililitre/Litre
-        m = re.search(r"(\d+(?:\.\d+)?)\s*(?:ml|lt|l)\b", product_name, re.I)
-        if m:
-            val = float(m.group(1))
-            if val < 20:  # litre
-                return val * 1000
-            return val  # ml
-        
-        return None
 
     async def get_product_price(self, product_id: str) -> dict[str, Any] | None:
         """Belirli bir ürünün fiyatını getirir (search ile)."""

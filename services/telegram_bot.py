@@ -166,16 +166,75 @@ def _format_top3_and_advice(query: str, products: list[dict], advice: str) -> st
     return text
 
 
+def _format_basket_result(
+    queries: list[str],
+    recommendations: list[dict],
+    total_basket_tl: float,
+    ai_summary: str,
+) -> str:
+    """Akıllı sepet çıktısı: ürün bazlı en ucuz + toplam sepet tutarı + AI özeti."""
+    lines = ["🛒 Akıllı Sepet Özeti", ""]
+    for rec in recommendations:
+        product = rec.get("product", "")
+        market = rec.get("market", "")
+        product_name = (rec.get("product_name", "") or "")[:45]
+        price = rec.get("price", 0)
+        lines.append(f"• {product}: {market} – {product_name}, {price:.2f} TL")
+    lines.append("")
+    lines.append(f"💰 Toplam Sepet Tutarı: {total_basket_tl:.2f} TL")
+    lines.append("")
+    lines.append("💡 AI Özeti:")
+    lines.append(ai_summary or "Özet alınamadı.")
+    text = "\n".join(lines)
+    if len(text) > TELEGRAM_MAX_MESSAGE_LENGTH:
+        text = text[: TELEGRAM_MAX_MESSAGE_LENGTH - 20] + "\n\n[...kısaltıldı]"
+    return text
+
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """ /start komutu – hoş geldin mesajı."""
     await update.message.reply_text(
         "Merhaba! Ben Maliyet Asistanı.\n\n"
-        "Aramak istediğiniz ürünü yazın, örn:\n"
-        "• 5 lt ayçiçek yağı\n"
-        "• süt\n"
-        "• tavuk göğüsü\n\n"
-        "En ucuz 3 seçeneği ve AI tavsiyesini size göndereceğim."
+        "Tek ürün: süt, tavuk göğüsü\n"
+        "Sepet (virgülle ayırın): süt, yumurta, peynir\n\n"
+        "En ucuz seçenekleri ve AI tavsiyesini göndereceğim."
     )
+
+
+async def _run_basket_flow(
+    update: Update,
+    status_msg,
+    queries: list[str],
+) -> None:
+    """Sepet modu: search_basket → process/filter per product → optimize_basket → format ve gönder."""
+    raw_basket = await bot_manager.search_basket(queries)
+    per_product_raw = raw_basket.get("per_product", {})
+    per_product_processed: dict[str, list] = {}
+    for q, data in per_product_raw.items():
+        results = data.get("results", [])
+        processed = data_processor.process(results)
+        filtered = await filter_service.filter_and_rank(query=q, products=processed)
+        per_product_processed[q] = filtered
+    if not any(per_product_processed.values()):
+        try:
+            await status_msg.edit_text("Üzgünüm, sepetinizdeki ürünler için hiçbir markette sonuç bulunamadı.")
+        except Exception:
+            await update.message.reply_text("Üzgünüm, sepetinizdeki ürünler için hiçbir markette sonuç bulunamadı.")
+        return
+    basket_data = {"queries": queries, "per_product": per_product_processed}
+    result = await ai_service.optimize_basket(basket_data)
+    recommendations = result.get("recommendations", [])
+    total_basket_tl = result.get("total_basket_tl", 0.0)
+    summary = result.get("summary", "")
+    text = _format_basket_result(queries, recommendations, total_basket_tl, summary)
+    try:
+        await status_msg.edit_text(text)
+    except Exception as edit_err:
+        logger.warning("[Telegram Bot] edit_text başarısız, reply deniyor: %s", edit_err)
+        try:
+            await update.message.reply_text(text)
+        except Exception:
+            await update.message.reply_text("Sepet sonucu alındı ancak gönderilemedi.")
 
 
 async def handle_product_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -201,6 +260,30 @@ async def handle_product_search(update: Update, context: ContextTypes.DEFAULT_TY
         logger.error(f"Hazır olmayan servis: {hazir_olmayanlar}")
         await update.message.reply_text("Servisler henüz hazır değil. Lütfen daha sonra tekrar deneyin.")
         return
+
+    # Sepet modu: virgülle ayrılmış en az 2, en fazla 15 ürün
+    if "," in query:
+        queries = [q.strip() for q in query.split(",") if q.strip()]
+        if 2 <= len(queries) <= 15:
+            status_msg = None
+            try:
+                status_msg = await update.message.reply_text("🛒 Sepet için marketler taranıyor...")
+            except Exception as e:
+                logger.exception("[Telegram Bot] İlk mesaj gönderilemedi: %s", e)
+                await update.message.reply_text("Bir teknik hata oluştu.")
+                return
+            try:
+                await _run_basket_flow(update, status_msg, queries)
+            except Exception as e:
+                logger.exception("[Telegram Bot] Sepet hatası: %s", e)
+                try:
+                    if status_msg:
+                        await status_msg.edit_text("Sepet işlenirken bir hata oluştu.")
+                    else:
+                        await update.message.reply_text("Sepet işlenirken bir hata oluştu.")
+                except Exception:
+                    await update.message.reply_text("Sepet işlenirken bir hata oluştu.")
+            return
 
     status_msg = None
     try:
