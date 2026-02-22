@@ -65,6 +65,24 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str = ""
     TELEGRAM_BOT_TOKEN: str = ""
 
+    # MCP / Veritabanı bağlantısı için Türkçe değişken adları (isteğe bağlı)
+    KULLANICI_ADI: str = ""
+    VERITABANI_ADI: str = ""
+    SIFRE: str = ""
+
+    @model_validator(mode="after")
+    def build_database_url_from_turkish_vars(self) -> "Settings":
+        """KULLANICI_ADI, VERITABANI_ADI, SIFRE doluysa DATABASE_URL oluşturur (MCP vb. için)."""
+        default_url = "postgresql+asyncpg://user:password@postgres:5432/dbname"
+        if self.DATABASE_URL != default_url:
+            return self
+        if self.KULLANICI_ADI and self.VERITABANI_ADI:
+            from urllib.parse import quote_plus
+            user = quote_plus(self.KULLANICI_ADI)
+            pwd = quote_plus(self.SIFRE)
+            self.DATABASE_URL = f"postgresql+asyncpg://{user}:{pwd}@postgres:5432/{self.VERITABANI_ADI}"
+        return self
+
     @model_validator(mode="after")
     def resolve_urls_for_local(self) -> "Settings":
         """Yerelde çalışırken redis/postgres host'larını localhost yapar."""

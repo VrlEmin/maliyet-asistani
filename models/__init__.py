@@ -1,15 +1,13 @@
 from app.db.session import Base, engine, get_db, get_redis
+from app.models import Market, Price, Product
 from app.schemas import (
     AIAnalysisRequest,
     AIAnalysisResponse,
     AraRequest,
     AraResponse,
-    Market,
     NearbyMarketsRequest,
-    Price,
     PriceComparisonResponse,
     PriceItem,
-    Product,
     ProductSearchRequest,
     ShoppingAdviceRequest,
     ShoppingAdviceResponse,
